@@ -83,11 +83,22 @@ export interface CustomVoice {
     name: string;
 }
 
+export interface SaveSlotMeta {
+    id: string;
+    name: string;
+    timestamp: number;
+    playerClass: PlayerClass;
+    playerLevel: number;
+    locationName: string;
+    isAutoSave: boolean;
+}
+
 export interface GameState {
   player: Player;
   world: World;
   log: GameMessage[];
   gameStatus: GameStatus;
+  saveIndex: SaveSlotMeta[];
   currentImage: string | null;
   isLoadingImage: boolean;
   lastLocation: string | null;

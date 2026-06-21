@@ -5,12 +5,14 @@ import React, { useReducer, useEffect, useCallback, useState, useRef } from 'rea
 import { GameScreen } from './components/GameScreen';
 import { StartScreen } from './components/StartScreen';
 import { GameOverScreen } from './components/GameOverScreen';
-import { GameState, PlayerClass, GameMessage } from './game/types';
-import { gameReducer, getFreshGameState } from './game/reducer';
+import { GameState, PlayerClass, GameMessage, GameStatus } from './game/types';
+import { gameReducer, getFreshGameState, loadSaveState, AUTOSAVE_ID } from './game/reducer';
 import { generateImage, initializeGame, getAmbientSoundQuery } from './services/aiService';
 import { processCommand } from './game/engine';
 import { getNarrationAudio } from './services/elevenLabsService';
 import { searchSounds } from './services/pixabayService';
+
+const AUTOSAVE_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 // Custom hook for managing the narration audio queue
 const useNarrationQueue = (
@@ -176,6 +178,22 @@ const App: React.FC = () => {
 
   useNarrationQueue(state, dispatch);
 
+  // ── Auto-save timer (5 min) ─────────────────────────────────────────────
+  // Use refs so the interval closure doesn't go stale without re-registering.
+  const gameStatusRef = useRef(state.gameStatus);
+  const isProcessingRef = useRef(state.isProcessingCommand);
+  useEffect(() => { gameStatusRef.current = state.gameStatus; }, [state.gameStatus]);
+  useEffect(() => { isProcessingRef.current = state.isProcessingCommand; }, [state.isProcessingCommand]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (gameStatusRef.current === GameStatus.Playing && !isProcessingRef.current) {
+        dispatch({ type: 'SAVE_TO_SLOT', payload: { name: 'Auto-save', isAutoSave: true } });
+      }
+    }, AUTOSAVE_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, []); // intentionally empty — runs once, reads via refs
+
   const handleNewGame = useCallback(async (playerClass: PlayerClass) => {
     setIsGeneratingWorld(true);
     try {
@@ -193,14 +211,20 @@ const App: React.FC = () => {
   }, []);
 
   const handleLoadGame = useCallback(() => {
-    const savedState = localStorage.getItem('geminiRealmsSave');
-    if (savedState) {
-      const parsedState: GameState = JSON.parse(savedState);
-      dispatch({ type: 'LOAD_GAME', payload: parsedState });
-    } else {
-      alert("No saved game found!");
+    // Load the most recent save (index is sorted newest-first).
+    const index = state.saveIndex;
+    if (index.length === 0) {
+      alert("No saved games found!");
+      return;
     }
-  }, []);
+    const mostRecent = index[0];
+    const savedState = loadSaveState(mostRecent.id);
+    if (savedState) {
+      dispatch({ type: 'LOAD_GAME', payload: savedState });
+    } else {
+      alert("Save data could not be read.");
+    }
+  }, [state.saveIndex]);
   
   const handleCommand = useCallback(async (command: string) => {
       if(state.isProcessingCommand) return;
@@ -262,7 +286,7 @@ const App: React.FC = () => {
   const renderContent = () => {
     switch (state.gameStatus) {
       case 'start_screen':
-        const hasSave = !!localStorage.getItem('geminiRealmsSave');
+        const hasSave = state.saveIndex.length > 0;
         return <StartScreen onNewGame={handleNewGame} onLoadGame={handleLoadGame} hasSaveGame={hasSave} isGeneratingWorld={isGeneratingWorld} />;
       case 'playing':
         return <GameScreen gameState={state} onCommand={handleCommand} dispatch={dispatch} />;

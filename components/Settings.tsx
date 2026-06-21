@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { ELEVENLABS_VOICES, getVoiceDetails } from '../services/elevenLabsService';
-import { CustomVoice } from '../game/types';
+import { CustomVoice, SaveSlotMeta, GameState } from '../game/types';
+import { loadSaveState, AUTOSAVE_ID } from '../game/reducer';
 
 interface SettingsProps {
     narrationEnabled: boolean;
@@ -13,8 +14,125 @@ interface SettingsProps {
     ambientSoundEnabled: boolean;
     ambientSoundVolume: number;
     pixabayApiKey: string | null;
+    saveIndex: SaveSlotMeta[];
     dispatch: React.Dispatch<any>;
 }
+
+// ── Saved Games Panel ───────────────────────────────────────────────────────
+
+const timeAgo = (ts: number): string => {
+    const diff = Date.now() - ts;
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    return `${Math.floor(hrs / 24)}d ago`;
+};
+
+const SavedGamesPanel: React.FC<{ saves: SaveSlotMeta[]; dispatch: React.Dispatch<any> }> = ({ saves, dispatch }) => {
+    const [isSaving, setIsSaving] = useState(false);
+    const [saveName, setSaveName] = useState('');
+
+    const autoSave = saves.find(s => s.id === AUTOSAVE_ID);
+    const namedSaves = saves.filter(s => s.id !== AUTOSAVE_ID);
+
+    const handleSave = () => {
+        const name = saveName.trim() || 'My Save';
+        dispatch({ type: 'SAVE_TO_SLOT', payload: { name, isAutoSave: false } });
+        setSaveName('');
+        setIsSaving(false);
+    };
+
+    const handleLoad = (id: string) => {
+        const savedState: GameState | null = loadSaveState(id);
+        if (savedState) {
+            dispatch({ type: 'LOAD_GAME', payload: savedState });
+        }
+    };
+
+    const handleDelete = (id: string, name: string) => {
+        if (confirm(`Delete save "${name}"?`)) {
+            dispatch({ type: 'DELETE_SLOT', payload: id });
+        }
+    };
+
+    const SaveRow: React.FC<{ slot: SaveSlotMeta }> = ({ slot }) => (
+        <div className="flex items-center justify-between bg-gray-900 rounded-md px-3 py-2 gap-2">
+            <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-gray-200 truncate">{slot.name}</p>
+                <p className="text-xs text-gray-500 truncate">
+                    {slot.playerClass} Lv{slot.playerLevel} · {slot.locationName} · {timeAgo(slot.timestamp)}
+                </p>
+            </div>
+            <div className="flex gap-1 shrink-0">
+                <button
+                    onClick={() => handleLoad(slot.id)}
+                    className="bg-blue-700 hover:bg-blue-600 text-white text-xs font-bold py-1 px-2 rounded transition-colors"
+                >
+                    Load
+                </button>
+                <button
+                    onClick={() => handleDelete(slot.id, slot.name)}
+                    className="bg-gray-700 hover:bg-red-700 text-gray-300 hover:text-white text-xs font-bold py-1 px-2 rounded transition-colors"
+                >
+                    ✕
+                </button>
+            </div>
+        </div>
+    );
+
+    return (
+        <div className="space-y-3">
+            {/* Save button / input */}
+            {isSaving ? (
+                <div className="flex gap-2">
+                    <input
+                        autoFocus
+                        type="text"
+                        value={saveName}
+                        onChange={e => setSaveName(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter') handleSave(); if (e.key === 'Escape') setIsSaving(false); }}
+                        placeholder="Save name…"
+                        maxLength={40}
+                        className="flex-1 bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+                    />
+                    <button onClick={handleSave} className="bg-green-600 hover:bg-green-700 text-white text-sm font-bold py-2 px-3 rounded-md transition-colors">Save</button>
+                    <button onClick={() => setIsSaving(false)} className="bg-gray-600 hover:bg-gray-500 text-white text-sm font-bold py-2 px-3 rounded-md transition-colors">✕</button>
+                </div>
+            ) : (
+                <button
+                    onClick={() => setIsSaving(true)}
+                    className="w-full bg-green-700 hover:bg-green-600 text-white font-bold py-2 px-4 rounded-md transition-colors text-sm"
+                >
+                    💾 Save Game
+                </button>
+            )}
+
+            {/* Auto-save slot */}
+            {autoSave && (
+                <div>
+                    <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Auto-save</p>
+                    <SaveRow slot={autoSave} />
+                </div>
+            )}
+
+            {/* Named saves */}
+            {namedSaves.length > 0 && (
+                <div>
+                    <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Saved Games</p>
+                    <div className="space-y-1 max-h-56 overflow-y-auto pr-1">
+                        {namedSaves.map(slot => <SaveRow key={slot.id} slot={slot} />)}
+                    </div>
+                </div>
+            )}
+
+            {saves.length === 0 && (
+                <p className="text-xs text-gray-600 text-center py-2">No saves yet. Auto-save runs every 5 minutes.</p>
+            )}
+        </div>
+    );
+};
 
 // Separate component for adding custom voices, which has its own save/validation cycle.
 const AddVoiceForm: React.FC<{ apiKey: string | null; dispatch: React.Dispatch<any>; onCancel: () => void; existingVoices: CustomVoice[] }> = 
@@ -72,7 +190,7 @@ const AddVoiceForm: React.FC<{ apiKey: string | null; dispatch: React.Dispatch<a
 };
 
 export const Settings: React.FC<SettingsProps> = (props) => {
-    const { dispatch, customVoices } = props;
+    const { dispatch, customVoices, saveIndex } = props;
 
     // Local state for the entire form to allow for a single save action
     const [formState, setFormState] = useState({
@@ -150,6 +268,14 @@ export const Settings: React.FC<SettingsProps> = (props) => {
     return (
         <div className="p-4 space-y-6 text-gray-300">
             <h2 className="text-2xl font-bold text-center border-b border-gray-600 pb-2 mb-4 text-red-400">Settings</h2>
+
+            {/* Saved Games */}
+            <div>
+                <h3 className="text-xl font-semibold mb-3">Saved Games</h3>
+                <SavedGamesPanel saves={saveIndex} dispatch={dispatch} />
+            </div>
+
+            <div className="border-t border-gray-700" />
 
             {/* Narration Settings */}
             <div>

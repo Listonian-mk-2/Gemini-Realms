@@ -1,7 +1,64 @@
 
-import { GameState, PlayerClass, Player, GameStatus, World, CustomVoice, GameMessage, Item, ItemType } from './types';
+import { GameState, PlayerClass, Player, GameStatus, World, CustomVoice, GameMessage, Item, ItemType, SaveSlotMeta } from './types';
 import { CLASS_CONFIG, HEALING_POTION } from './constants';
 import { ELEVENLABS_VOICES } from '../services/elevenLabsService';
+
+// ── Save-slot storage keys ──────────────────────────────────────────────────
+export const SAVE_INDEX_KEY = 'geminiRealmsSaveIndex';
+export const SAVE_PREFIX = 'geminiRealmsSave:';
+export const AUTOSAVE_ID = '__autosave__';
+const LEGACY_SAVE_KEY = 'geminiRealmsSave';
+
+// ── Save index helpers (exported so Settings can read slots) ────────────────
+export const readSaveIndex = (): SaveSlotMeta[] => {
+    try {
+        const stored = localStorage.getItem(SAVE_INDEX_KEY);
+        return stored ? JSON.parse(stored) : [];
+    } catch { return []; }
+};
+
+const writeSaveIndex = (index: SaveSlotMeta[]): void => {
+    localStorage.setItem(SAVE_INDEX_KEY, JSON.stringify(index));
+};
+
+export const loadSaveState = (id: string): GameState | null => {
+    try {
+        const raw = localStorage.getItem(`${SAVE_PREFIX}${id}`);
+        return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+};
+
+/** One-time migration: move the old single-slot save into the new index. */
+const migrateLegacySave = (): SaveSlotMeta[] => {
+    const legacy = localStorage.getItem(LEGACY_SAVE_KEY);
+    const existingIndex = readSaveIndex();
+
+    if (!legacy) return existingIndex;
+
+    try {
+        const parsed: GameState = JSON.parse(legacy);
+        const alreadyMigrated = existingIndex.some(s => s.id === 'migrated');
+        if (!alreadyMigrated) {
+            const meta: SaveSlotMeta = {
+                id: 'migrated',
+                name: 'Recovered Save',
+                timestamp: Date.now(),
+                playerClass: parsed.player.class,
+                playerLevel: parsed.player.level,
+                locationName: parsed.world.rooms[parsed.player.location]?.name ?? 'Unknown',
+                isAutoSave: false,
+            };
+            const newIndex = [meta, ...existingIndex];
+            writeSaveIndex(newIndex);
+            localStorage.setItem(`${SAVE_PREFIX}migrated`, legacy);
+            localStorage.removeItem(LEGACY_SAVE_KEY);
+            return newIndex;
+        }
+    } catch { /* malformed legacy save — just discard */ }
+
+    localStorage.removeItem(LEGACY_SAVE_KEY);
+    return existingIndex;
+};
 
 export const initialPlayerState: Player = {
   name: 'Adventurer',
@@ -67,6 +124,7 @@ export const getFreshGameState = (): GameState => {
         actionsSinceProgress: 0,
         visitedRooms: [],
         isMapOpen: false,
+        saveIndex: migrateLegacySave(),
         // --- Persistent Settings ---
         narrationEnabled: getBool('geminiRealmsNarrationEnabled', defaults.narrationEnabled),
         elevenLabsApiKey: getString('geminiRealmsElevenLabsKey'),
@@ -105,7 +163,8 @@ export const initialGameState: GameState = getFreshGameState();
 type Action =
   | { type: 'NEW_GAME'; payload: { playerClass: PlayerClass, world: World, startingLocation: string, startingNarration: string } }
   | { type: 'LOAD_GAME'; payload: GameState }
-  | { type: 'SAVE_GAME' }
+  | { type: 'SAVE_TO_SLOT'; payload: { name: string; isAutoSave: boolean } }
+  | { type: 'DELETE_SLOT'; payload: string }
   | { type: 'UPDATE_STATE'; payload: GameState }
   | { type: 'SET_CURRENT_IMAGE'; payload: string }
   | { type: 'SET_LOADING_IMAGE'; payload: boolean }
@@ -171,13 +230,13 @@ export const gameReducer = (state: GameState, action: Action): GameState => {
     }
     case 'LOAD_GAME': {
       const savedProgress = action.payload;
-      // Use current settings from memory (which are fresh from localStorage on boot)
-      // This ensures we don't overwrite current settings with old settings from the save file
+      // Use current settings and save index from memory — don't overwrite with saved values
       const currentSettings = extractSettings(state);
 
       return {
           ...savedProgress,
           ...currentSettings,
+          saveIndex: state.saveIndex,   // always keep the live index
           gameStatus: GameStatus.Playing,
           isLoadingImage: true,
           lastLocation: null,
@@ -186,9 +245,40 @@ export const gameReducer = (state: GameState, action: Action): GameState => {
           isMapOpen: false,
       };
     }
-    case 'SAVE_GAME':
-      localStorage.setItem('geminiRealmsSave', JSON.stringify(state));
-      return { ...state, log: [...state.log, {text: "Game saved.", type: 'system'}] };
+    case 'SAVE_TO_SLOT': {
+      const { name, isAutoSave } = action.payload;
+      const id = isAutoSave ? AUTOSAVE_ID : `save_${Date.now()}`;
+      const currentRoom = state.world.rooms[state.player.location];
+
+      const meta: SaveSlotMeta = {
+          id,
+          name,
+          timestamp: Date.now(),
+          playerClass: state.player.class,
+          playerLevel: state.player.level,
+          locationName: currentRoom?.name ?? 'Unknown',
+          isAutoSave,
+      };
+
+      // Persist state (strip the saveIndex to avoid stale nested copies)
+      const { saveIndex: _omit, ...stateToSave } = state;
+      localStorage.setItem(`${SAVE_PREFIX}${id}`, JSON.stringify(stateToSave));
+
+      // Update the index (replace existing entry with same id, then prepend)
+      const filtered = state.saveIndex.filter(s => s.id !== id);
+      const newIndex = [meta, ...filtered];
+      writeSaveIndex(newIndex);
+
+      const logMsg = isAutoSave ? 'Game auto-saved.' : `Game saved: "${name}".`;
+      return { ...state, saveIndex: newIndex, log: [...state.log, { text: logMsg, type: 'system' }] };
+    }
+    case 'DELETE_SLOT': {
+      const id = action.payload;
+      localStorage.removeItem(`${SAVE_PREFIX}${id}`);
+      const newIndex = state.saveIndex.filter(s => s.id !== id);
+      writeSaveIndex(newIndex);
+      return { ...state, saveIndex: newIndex };
+    }
     case 'UPDATE_STATE':
         return action.payload;
     case 'SET_CURRENT_IMAGE':
@@ -202,10 +292,9 @@ export const gameReducer = (state: GameState, action: Action): GameState => {
     case 'END_COMMAND_PROCESSING':
         return { ...state, isProcessingCommand: false };
     case 'RESTART': {
-        localStorage.removeItem('geminiRealmsSave');
-        // Return to the start screen, preserving current settings but resetting gameplay state.
+        // Return to the start screen, preserving settings and save index but resetting gameplay.
         return {
-            ...state, // Preserves current settings
+            ...state,
             player: initialPlayerState,
             world: { rooms: {} },
             log: [{ text: 'Welcome to Gemini Realms. Choose your class to begin.', type: 'system' }],

@@ -14,7 +14,7 @@ type ActiveTab = 'character' | 'inventory' | 'map' | 'settings';
 
 export const RightPanel: React.FC<RightPanelProps> = ({ gameState, dispatch }) => {
   const [activeTab, setActiveTab] = useState<ActiveTab>('character');
-  const { player, narrationEnabled, elevenLabsApiKey, narrationVoiceId, systemVoiceId, customVoices, impEnabled, impVoiceId, ambientSoundEnabled, ambientSoundVolume, pixabayApiKey } = gameState;
+  const { player, narrationEnabled, elevenLabsApiKey, narrationVoiceId, systemVoiceId, customVoices, impEnabled, impVoiceId, ambientSoundEnabled, ambientSoundVolume, pixabayApiKey, saveIndex } = gameState;
 
   const renderTabContent = () => {
     switch (activeTab) {
@@ -37,9 +37,9 @@ export const RightPanel: React.FC<RightPanelProps> = ({ gameState, dispatch }) =
             </div>
         );
       case 'settings':
-        return <Settings 
-                    narrationEnabled={narrationEnabled} 
-                    apiKey={elevenLabsApiKey} 
+        return <Settings
+                    narrationEnabled={narrationEnabled}
+                    apiKey={elevenLabsApiKey}
                     narrationVoiceId={narrationVoiceId}
                     systemVoiceId={systemVoiceId}
                     customVoices={customVoices}
@@ -48,7 +48,8 @@ export const RightPanel: React.FC<RightPanelProps> = ({ gameState, dispatch }) =
                     ambientSoundEnabled={ambientSoundEnabled}
                     ambientSoundVolume={ambientSoundVolume}
                     pixabayApiKey={pixabayApiKey}
-                    dispatch={dispatch} 
+                    saveIndex={saveIndex}
+                    dispatch={dispatch}
                 />;
       default:
         return null;
